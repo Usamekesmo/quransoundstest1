@@ -1,12 +1,15 @@
 // =================================================================================
-//  رفيق الحفظ المتقدم - ملف الجافاسكريبت الرئيسي (نسخة مطورة)
+//  رفيق الحفظ المتقدم - ملف الجافاسكريبت الرئيسي (نسخة مطورة مع Google Sheets )
 // =================================================================================
 
 // --- استيراد الإعدادات من ملف config.js ---
 import { API_ENDPOINTS, QUIZ_CONFIG, MOTIVATION_CONFIG } from './config.js';
 
+// --- [إضافة جديدة] رابط الـ API الذي حصلت عليه من Google Apps Script ---
+const GOOGLE_SHEET_API_URL = 'https://script.google.com/macros/s/AKfycbwA3S6-EJdFwKqYZjdGR8VTxXgOXA9oP-SkvMf8VdaMamW7lvUt17L4LlsdXFMed36h/exec'; // <-- الصق الرابط الخاص بك هنا
+
 // --- 1. DOM Element Variables ---
-const startScreen = document.getElementById('start-screen');
+const startScreen = document.getElementById('start-screen' );
 const quizScreen = document.getElementById('quiz-screen');
 const errorReviewScreen = document.getElementById('error-review-screen');
 const resultScreen = document.getElementById('result-screen');
@@ -57,7 +60,8 @@ const copyChallengeBtn = document.getElementById('copy-challenge-btn');
 // --- 2. كائن الحالة الموحد (Single State Object) ---
 let AppState = {
     currentUser: null,
-    lastUsedName: localStorage.getItem('lastUserName'),
+    currentUserData: null, // لتخزين بيانات المستخدم الحالية
+    lastUsedName: localStorage.getItem('lastUserName'), // لتذكر آخر اسم تم استخدامه
     theme: localStorage.getItem('theme') || 'light',
     pageData: {
         number: null,
@@ -74,17 +78,15 @@ let AppState = {
 };
 
 // --- 3. Initialization ---
-// --- تتمة الكود ---
-window.onload = () => {
+window.onload = async () => {
     if (AppState.lastUsedName) {
         userNameInput.value = AppState.lastUsedName;
-        AppState.currentUser = AppState.lastUsedName;
-        updateAllUI();
+        await handleUserLogin(AppState.lastUsedName);
     }
     if (AppState.theme === 'dark') {
         document.body.classList.add('dark-mode');
     }
-    updateAllUI(); // Call it again to set button text
+    updateAllUI();
 };
 
 // --- 4. Event Listeners ---
@@ -101,45 +103,99 @@ showFinalResultButton.addEventListener('click', () => {
     showResults();
 });
 userNameInput.addEventListener('input', () => {
-    AppState.currentUser = userNameInput.value;
-    updateAllUI();
+    // لا نفعل شيئاً هنا، سيتم تسجيل الدخول عند بدء الاختبار
 });
 backToStartBtn.addEventListener('click', showStartScreen);
 copyChallengeBtn.addEventListener('click', copyChallengeLink);
 
 // --- 5. Core User Data & UI Management ---
 
-function getUserData() {
-    if (!AppState.currentUser) return null;
-    const defaultData = {
-        xp: 0, level: 1, lastTestDate: null, testsCompleted: 0,
-        pageScores: {}, errorTypes: {}, totalCorrect: 0,
-        streak: 0, lastRewardDate: null,
-        achievements: JSON.parse(JSON.stringify(MOTIVATION_CONFIG.achievements))
-    };
-    const data = localStorage.getItem(`userData_${AppState.currentUser}`);
-    return data ? { ...defaultData, ...JSON.parse(data) } : defaultData;
+/**
+ * يتعامل مع عملية تسجيل دخول المستخدم وجلب بياناته من Google Sheet.
+ */
+async function handleUserLogin(username) {
+    if (!username) return;
+    loader.classList.remove('hidden');
+    AppState.currentUser = username;
+    localStorage.setItem('lastUserName', username); // تذكر الاسم محلياً
+
+    const userData = await getUserData(username);
+    AppState.currentUserData = userData;
+
+    loader.classList.add('hidden');
+    updateAllUI();
 }
 
-function saveUserData(data) {
-    if (!AppState.currentUser) return;
-    localStorage.setItem(`userData_${AppState.currentUser}`, JSON.stringify(data));
+/**
+ * يجلب بيانات المستخدم من Google Sheet.
+ */
+async function getUserData(username) {
+    try {
+        const response = await fetch(`${GOOGLE_SHEET_API_URL}?user=${encodeURIComponent(username)}`);
+        const result = await response.json();
+
+        if (result.status === "success") {
+            return result.data;
+        } else if (result.status === "not_found") {
+            console.log("New user detected, creating default data object.");
+            return {
+                xp: 0, level: 1, lastTestDate: null, testsCompleted: 0,
+                pageScores: {}, errorTypes: {}, totalCorrect: 0,
+                streak: 0, lastRewardDate: null,
+                achievements: JSON.parse(JSON.stringify(MOTIVATION_CONFIG.achievements))
+            };
+        } else {
+            throw new Error(result.message);
+        }
+    } catch (error) {
+        console.error("Error fetching user data:", error);
+        alert("حدث خطأ أثناء جلب بياناتك. الرجاء التأكد من اتصالك بالإنترنت والمحاولة مرة أخرى.");
+        return null;
+    }
+}
+
+/**
+ * يحفظ بيانات المستخدم في Google Sheet.
+ */
+async function saveUserData(data) {
+    if (!AppState.currentUser || !data) return;
+    AppState.currentUserData = data; // تحديث الحالة المحلية فوراً
+
+    try {
+        await fetch(GOOGLE_SHEET_API_URL, {
+            method: 'POST',
+            mode: 'no-cors', // مهم للتعامل مع إعادة توجيه Apps Script
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                userId: AppState.currentUser,
+                userData: data
+            })
+        });
+        console.log("User data saved to Google Sheets successfully.");
+    } catch (error) {
+        console.error("Error saving user data:", error);
+        alert("تعذر حفظ تقدمك. سيتم حفظه محلياً لهذه الجلسة.");
+    }
 }
 
 function updateAllUI() {
-    if (!AppState.currentUser) {
+    if (!AppState.currentUser || !AppState.currentUserData) {
         welcomeName.textContent = '';
         userTitle.textContent = '';
+        motivationFeatures.classList.add('hidden');
         return;
     }
-    const userData = getUserData();
+    motivationFeatures.classList.remove('hidden');
+    const userData = AppState.currentUserData;
     welcomeName.textContent = AppState.currentUser;
     userTitle.textContent = MOTIVATION_CONFIG.titles[userData.level - 1] || MOTIVATION_CONFIG.titles[MOTIVATION_CONFIG.titles.length - 1];
     
     streakCounter.textContent = userData.streak;
     achievementsCounter.textContent = Object.values(userData.achievements).filter(a => a.unlocked).length;
 
-    const currentLevelXP = MOTIVATION_CONFIG.levels[userData.level - 1];
+    const currentLevelXP = MOTIVATION_CONFIG.levels[userData.level - 1] || 0;
     const nextLevelXP = MOTIVATION_CONFIG.levels[userData.level] || (currentLevelXP * 2);
     const xpInLevel = userData.xp - currentLevelXP;
     const xpForLevel = nextLevelXP - currentLevelXP;
@@ -151,8 +207,8 @@ function updateAllUI() {
 }
 
 function showProfileScreen() {
-    if (!AppState.currentUser) {
-        alert('الرجاء إدخال اسمك أولاً.');
+    if (!AppState.currentUser || !AppState.currentUserData) {
+        alert('الرجاء إدخال اسمك وبدء اختبار أولاً.');
         return;
     }
     startScreen.classList.add('hidden');
@@ -160,7 +216,7 @@ function showProfileScreen() {
     profileScreen.classList.remove('hidden');
     profileName.textContent = AppState.currentUser;
     
-    const userData = getUserData();
+    const userData = AppState.currentUserData;
     const masteredCount = Object.values(userData.pageScores || {}).filter(s => s === 10).length;
     masteredPagesCount.textContent = masteredCount;
     const treeEmojis = ['🌱', '🌿', '🌳', '🌳✨', '🌳🌟'];
@@ -201,14 +257,22 @@ function showQuestionSkeleton() {
 // --- 7. Core Quiz Functions ---
 
 async function startStandardTest() {
-    AppState.currentUser = userNameInput.value;
+    const username = userNameInput.value;
     const pageNumber = pageNumberInput.value;
-    if (!AppState.currentUser || !pageNumber) {
+    if (!username || !pageNumber) {
         alert('الرجاء إدخال اسم ورقم صفحة.');
         return;
     }
-    localStorage.setItem('lastUserName', AppState.currentUser);
     
+    if (username !== AppState.currentUser) {
+        await handleUserLogin(username);
+    }
+    
+    if (!AppState.currentUserData) {
+        alert("لم نتمكن من تحميل بياناتك، يرجى المحاولة مرة أخرى.");
+        return;
+    }
+
     startScreen.classList.add('hidden');
     quizScreen.classList.remove('hidden');
     loader.classList.remove('hidden');
@@ -310,13 +374,13 @@ function handleResult(isCorrect, correctAnswerText, questionAyah) {
         feedbackArea.textContent = `إجابة خاطئة.`;
         feedbackArea.className = 'wrong-feedback';
         const questionData = {
-            type: 'unknown',
+            type: 'unknown', // يمكن تحسين هذا لاحقاً لتحديد نوع السؤال
             correctAnswer: correctAnswerText,
             questionHTML: questionArea.innerHTML
         };
         AppState.currentQuiz.errorLog.push(questionData);
         
-        const userData = getUserData();
+        let userData = AppState.currentUserData;
         userData.errorTypes[questionData.type] = (userData.errorTypes[questionData.type] || 0) + 1;
         saveUserData(userData);
     }
@@ -370,7 +434,7 @@ function showResults() {
     const xpGained = 10 + (score * 2);
     xpGainedText.textContent = xpGained;
     
-    let userData = getUserData();
+    let userData = AppState.currentUserData;
     userData.xp += xpGained;
     userData.totalCorrect += score;
     userData.testsCompleted++;
@@ -406,7 +470,7 @@ function showResults() {
     userData.lastTestDate = today;
 
     checkAndGrantAchievements(score);
-    saveUserData(userData);
+    saveUserData(userData); // حفظ نهائي لكل التغييرات
     generateChallengeLink();
     updateAllUI();
 }
@@ -415,15 +479,15 @@ function grantDailyReward() {
     const reward = shuffleArray(MOTIVATION_CONFIG.dailyRewards)[0];
     rewardText.textContent = reward.text;
     if (reward.type === 'xp') {
-        let userData = getUserData();
+        let userData = AppState.currentUserData;
         userData.xp += reward.value;
-        saveUserData(userData);
+        // سيتم الحفظ في دالة showResults
     }
     dailyRewardModal.style.display = 'block';
 }
 
 function checkAndGrantAchievements(score) {
-    let userData = getUserData();
+    let userData = AppState.currentUserData;
     let newAchievement = false;
     
     if (!userData.achievements.firstTest.unlocked) {
@@ -442,7 +506,7 @@ function checkAndGrantAchievements(score) {
     
     if (newAchievement) {
         alert("🎉 لقد حصلت على إنجاز جديد! تفحصه في ملفك الشخصي.");
-        saveUserData(userData);
+        // سيتم الحفظ في دالة showResults
     }
 }
 
@@ -451,7 +515,7 @@ function copyChallengeLink() {
     document.execCommand('copy');
     alert('تم نسخ رابط التحدي!');
     
-    let userData = getUserData();
+    let userData = AppState.currentUserData;
     if (!userData.achievements.sendChallenge.unlocked) {
         userData.achievements.sendChallenge.unlocked = true;
         alert("🎉 لقد حصلت على إنجاز 'المتحدي'!");
@@ -484,12 +548,17 @@ function toggleTheme() {
 }
 
 async function startSmartReview() {
-    AppState.currentUser = userNameInput.value;
-    if (!AppState.currentUser) {
+    const username = userNameInput.value;
+    if (!username) {
         alert('الرجاء إدخال اسمك أولاً.');
         return;
     }
-    const userData = getUserData();
+    if (username !== AppState.currentUser) {
+        await handleUserLogin(username);
+    }
+    if (!AppState.currentUserData) return;
+
+    const userData = AppState.currentUserData;
     let pageToReview = 1;
     const weakPages = Object.entries(userData.pageScores || {})
         .filter(([, score]) => score < 8)
@@ -508,7 +577,8 @@ async function startSmartReview() {
 }
 
 function buildHeatmap() {
-    const userData = getUserData();
+    const userData = AppState.currentUserData;
+    if (!userData) return;
     hifzHeatmap.innerHTML = '';
     for (let i = 1; i <= 604; i++) {
         const cell = document.createElement('div');
@@ -520,7 +590,8 @@ function buildHeatmap() {
         else if (score >= 5) level = 2;
         else if (score > 0) level = 1;
         cell.dataset.level = level;
-        cell.innerHTML = `<span class="tooltip">صفحة ${i}<br>أفضل درجة: ${score || 'لم تختبر'}</span>`;
+        cell.innerHTML = `<span class="tooltip">صفحة ${i}  
+أفضل درجة: ${score || 'لم تختبر'}</span>`;
         hifzHeatmap.appendChild(cell);
     }
 }
@@ -557,8 +628,8 @@ function showMotivationalMessage(type) {
 }
 
 function generateAndShareCard() {
-    if (!AppState.currentUser) return;
-    const userData = getUserData();
+    if (!AppState.currentUser || !AppState.currentUserData) return;
+    const userData = AppState.currentUserData;
     const masteredCount = Object.values(userData.pageScores || {}).filter(s => s === 10).length;
     const unlockedAchievements = Object.values(userData.achievements).filter(a => a.unlocked).length;
     
@@ -583,7 +654,8 @@ function generateAndShareCard() {
 }
 
 function showAdvancedStats() {
-    const userData = getUserData();
+    const userData = AppState.currentUserData;
+    if (!userData) return;
     const totalQuestionsAnswered = userData.testsCompleted * QUIZ_CONFIG.defaultQuestionsCount;
     const accuracy = totalQuestionsAnswered > 0 ? Math.round((userData.totalCorrect / totalQuestionsAnswered) * 100) : 0;
     
@@ -658,13 +730,14 @@ async function generateLocateAyahQuestion() {
     questionArea.innerHTML = `<h3>السؤال ${AppState.currentQuiz.questionIndex + 1}: أين يقع موضع هذه الآية؟</h3>
         ${audioSrc ? `<audio controls autoplay src="${audioSrc}"></audio>` : '<p>عفواً، تعذر تحميل الصوت.</p>'}
         <div class="interactive-area">${['بداية', 'وسط', 'نهاية'].map(loc => `<div class="choice-box" data-correct="${loc === correctLocation}">${loc} الصفحة</div>`).join('')}</div>`;
-    addChoiceListeners(`${correctLocation} الصفحة`, questionAyah);
+    addChoiceListeners(`${correctLocation} الصفحة
+`, questionAyah);
 }
 
 async function generateCompleteAyahQuestion() {
     const pageAyahs = AppState.pageData.ayahs;
     const longAyahs = pageAyahs.filter(a => a.text.split(' ').length > 8);
-    if (longAyahs.length < 3) return generateChooseNextQuestion();
+    if (longAyahs.length < 3) return generateChooseNextQuestion(); // Fallback
     const questionAyah = shuffleArray(longAyahs)[0];
     const audioSrc = await getAyahAudio(questionAyah);
     const words = questionAyah.text.split(' ');
@@ -687,7 +760,7 @@ async function generateCompleteAyahQuestion() {
 async function generateCompleteLastWordQuestion() {
     const pageAyahs = AppState.pageData.ayahs;
     const suitableAyahs = pageAyahs.filter(a => a.text.split(' ').length > 3);
-    if (suitableAyahs.length < 4) return generateChooseNextQuestion();
+    if (suitableAyahs.length < 4) return generateChooseNextQuestion(); // Fallback
     const questionAyah = shuffleArray(suitableAyahs)[0];
     const audioSrc = await getAyahAudio(questionAyah);
     const words = questionAyah.text.split(' ');
@@ -705,7 +778,7 @@ async function generateCompleteLastWordQuestion() {
 async function generateLinkStartEndQuestion() {
     const pageAyahs = AppState.pageData.ayahs;
     const suitableAyahs = pageAyahs.filter(a => a.text.split(' ').length > 5);
-    if (suitableAyahs.length < 4) return generateChooseNextQuestion();
+    if (suitableAyahs.length < 4) return generateChooseNextQuestion(); // Fallback
     const questionAyah = shuffleArray(suitableAyahs)[0];
     const words = questionAyah.text.split(' ');
     const startText = words.slice(0, 3).join(' ') + '...';
